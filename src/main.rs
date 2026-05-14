@@ -298,6 +298,8 @@ fn ignore_key(domain: &str, key: &str, before: Option<&Value>, after: Option<&Va
 fn ignore_domain_specific_key(domain: &str, key: &str) -> bool {
     (domain == "com.apple.controlcenter" && key.starts_with("NSStatusItem Preferred Position "))
         || (domain == "com.apple.DuetExpertCenter.MagicalMoments" && key == "lastPlayed")
+        || (domain == "com.apple.DuetExpertCenter.AppPredictionExpert"
+            && key.starts_with("ATXUpdatePredictionsLoggerCountsDictionary-"))
         || (domain == "com.apple.spaces" && key == "SpacesDisplayConfiguration")
 }
 
