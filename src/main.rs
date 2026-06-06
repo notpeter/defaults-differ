@@ -294,7 +294,7 @@ fn edit_stdin(output: &str, editor_choice: &EditorChoice) -> Result<(), Box<dyn 
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to open editor stdin"))?;
+        .ok_or_else(|| io::Error::other("failed to open editor stdin"))?;
     stdin.write_all(output.as_bytes())?;
     drop(stdin);
 
