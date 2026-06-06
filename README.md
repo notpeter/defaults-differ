@@ -2,6 +2,8 @@
 
 Detect changes in macOS `defaults`
 
+<img width="744" height="311" alt="defaults-differ" src="https://github.com/user-attachments/assets/40488afa-f0ac-42c3-be98-65c969690337" />
+
 ## Help
 
 ```text
