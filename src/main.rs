@@ -1,8 +1,9 @@
 use plist::{Dictionary, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::io::{self, Cursor, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 type Snapshot = BTreeMap<String, Dictionary>;
 
@@ -19,8 +20,22 @@ const IGNORED_KEYS: &[&str] = &[
 ];
 const IGNORED_KEY_SUBSTRINGS: &[&str] = &["_DKThrottledActivityLast_"];
 
+#[derive(Debug, PartialEq, Eq)]
 enum Mode {
-    Defaults,
+    Defaults(Options),
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Options {
+    append: Option<String>,
+    edit: Option<EditorChoice>,
+    message: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EditorChoice {
+    Environment,
+    Command(String),
 }
 
 fn main() {
@@ -36,42 +51,116 @@ fn run() -> Result<(), Box<dyn Error>> {
             print_help();
             Ok(())
         }
-        Some(Mode::Defaults) => run_defaults_mode(),
+        Some(Mode::Defaults(options)) => run_defaults_mode(&options),
     }
 }
 
 fn parse_mode(args: &[String]) -> Result<Option<Mode>, Box<dyn Error>> {
-    if args.is_empty() {
-        return Ok(Some(Mode::Defaults));
+    let mut options = Options::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        let argument = &args[index];
+        match argument.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "-a" | "--append" | "--out" => {
+                index += 1;
+                options.append = Some(
+                    args.get(index)
+                        .ok_or_else(|| format!("{argument} requires a filename"))?
+                        .clone(),
+                );
+            }
+            "-e" | "--edit" => {
+                options.edit = Some(parse_optional_editor(args, &mut index));
+            }
+            "-m" | "--message" | "--comment" => {
+                index += 1;
+                options.message = Some(
+                    args.get(index)
+                        .ok_or_else(|| format!("{argument} requires a message"))?
+                        .clone(),
+                );
+            }
+            other if other.starts_with("--append=") => {
+                options.append = Some(option_value(other, "--append")?.to_string());
+            }
+            other if other.starts_with("--out=") => {
+                options.append = Some(option_value(other, "--out")?.to_string());
+            }
+            other if other.starts_with("--message=") => {
+                options.message = Some(option_value(other, "--message")?.to_string());
+            }
+            other if other.starts_with("--comment=") => {
+                options.message = Some(option_value(other, "--comment")?.to_string());
+            }
+            other if other.starts_with("--edit=") => {
+                options.edit = Some(EditorChoice::Command(
+                    option_value(other, "--edit")?.to_string(),
+                ));
+            }
+            other if other.starts_with("-a") && other.len() > 2 => {
+                options.append = Some(other[2..].to_string());
+            }
+            other if other.starts_with("-e") && other.len() > 2 => {
+                options.edit = Some(EditorChoice::Command(other[2..].to_string()));
+            }
+            other if other.starts_with("-m") && other.len() > 2 => {
+                options.message = Some(other[2..].to_string());
+            }
+            other => return Err(format!("unrecognized argument: {other}").into()),
+        }
+
+        index += 1;
     }
 
-    match args[0].as_str() {
-        "-h" | "--help" => Ok(None),
-        other => Err(format!("unrecognized argument: {other}").into()),
+    Ok(Some(Mode::Defaults(options)))
+}
+
+fn parse_optional_editor(args: &[String], index: &mut usize) -> EditorChoice {
+    let next_index = *index + 1;
+    if let Some(editor) = args
+        .get(next_index)
+        .filter(|argument| !argument.starts_with('-'))
+    {
+        *index = next_index;
+        EditorChoice::Command(editor.clone())
+    } else {
+        EditorChoice::Environment
     }
 }
 
-fn run_defaults_mode() -> Result<(), Box<dyn Error>> {
-    println!("Dumping current defaults...");
+fn option_value<'a>(argument: &'a str, option: &str) -> Result<&'a str, Box<dyn Error>> {
+    let value = argument
+        .strip_prefix(option)
+        .and_then(|rest| rest.strip_prefix('='))
+        .ok_or_else(|| format!("invalid option form: {argument}"))?;
+    if value.is_empty() {
+        return Err(format!("{option} requires a value").into());
+    }
+    Ok(value)
+}
+
+fn run_defaults_mode(options: &Options) -> Result<(), Box<dyn Error>> {
+    eprintln!("Dumping current defaults...");
     let (before, before_warnings) = snapshot_defaults()?;
     print_warnings(&before_warnings);
 
     prompt_for_change("Make your settings change now, then press Enter to dump defaults again.")?;
 
-    println!("Dumping updated defaults...");
+    eprintln!("Dumping updated defaults...");
     let (after, after_warnings) = snapshot_defaults()?;
     print_warnings(&after_warnings);
 
     let commands = diff_defaults_snapshots(&before, &after);
     if commands.is_empty() {
-        println!("No defaults changes detected.");
+        eprintln!("No defaults changes detected.");
     } else {
-        println!();
-        println!("Generated defaults commands:");
-        for command in commands {
-            println!("{command}");
-        }
+        eprintln!("Generated defaults commands.");
     }
+
+    let output = command_output(&commands, options.message.as_deref())?;
+    emit_output(&output, options)?;
 
     Ok(())
 }
@@ -79,11 +168,11 @@ fn run_defaults_mode() -> Result<(), Box<dyn Error>> {
 fn print_help() {
     println!("defaults-differ");
     println!();
-    println!("Usage:");
+    println!("Usage");
     println!("  defaults-differ");
-    println!();
-    println!("Dumps macOS defaults, waits for a change, then");
-    println!("print defaults commands for the detected diff.");
+    println!("    [-a FILENAME | --append=FILENAME ]  Append defaults commands to a file");
+    println!("    [-m MESSAGE  | --message=MESSAGE ]  Message as comment preceding commands");
+    println!("    [-e [EDITOR] | --edit [EDITOR]   ]  Open $EDITOR or specified text editor");
 }
 
 fn print_warnings(warnings: &[String]) {
@@ -93,10 +182,127 @@ fn print_warnings(warnings: &[String]) {
 }
 
 fn prompt_for_change(message: &str) -> Result<(), Box<dyn Error>> {
-    println!("{message}");
-    io::stdout().flush()?;
+    eprintln!("{message}");
+    io::stderr().flush()?;
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
+    Ok(())
+}
+
+fn command_output(commands: &[String], message: Option<&str>) -> Result<String, Box<dyn Error>> {
+    if commands.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut lines = Vec::new();
+    if let Some(message) = message {
+        lines.push(format!("# {}: {message}", current_date()?));
+    }
+    lines.extend(commands.iter().cloned());
+
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn current_date() -> Result<String, Box<dyn Error>> {
+    let output = Command::new("date").arg("+%F").output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "`date +%F` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn emit_output(output: &str, options: &Options) -> Result<(), Box<dyn Error>> {
+    if let Some(filename) = &options.append {
+        append_output(filename, output)?;
+        if let Some(editor) = &options.edit {
+            edit_file(filename, editor)?;
+        }
+    } else if let Some(editor) = &options.edit {
+        edit_stdin(output, editor)?;
+    } else {
+        write_stdout(output)?;
+    }
+
+    Ok(())
+}
+
+fn write_stdout(output: &str) -> Result<(), Box<dyn Error>> {
+    let mut stdout = io::stdout();
+    stdout.write_all(output.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn append_output(filename: &str, output: &str) -> Result<(), Box<dyn Error>> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(filename)?;
+    file.write_all(output.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+fn editor(choice: &EditorChoice) -> Option<String> {
+    match choice {
+        EditorChoice::Environment => std::env::var("EDITOR").ok(),
+        EditorChoice::Command(editor) => Some(editor.clone()),
+    }
+    .map(|editor| editor.trim().to_string())
+    .filter(|editor| !editor.is_empty())
+}
+
+fn edit_file(filename: &str, editor_choice: &EditorChoice) -> Result<(), Box<dyn Error>> {
+    let Some(editor) = editor(editor_choice) else {
+        eprintln!("warning: --edit requested, but $EDITOR is unset");
+        return Ok(());
+    };
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg("exec $EDITOR \"$1\"")
+        .arg("defaults-differ-editor")
+        .arg(filename)
+        .env("EDITOR", editor)
+        .status()?;
+    if !status.success() {
+        return Err(format!("editor exited with {status}").into());
+    }
+
+    Ok(())
+}
+
+fn edit_stdin(output: &str, editor_choice: &EditorChoice) -> Result<(), Box<dyn Error>> {
+    let Some(editor) = editor(editor_choice) else {
+        eprintln!("warning: --edit requested, but $EDITOR is unset");
+        write_stdout(output)?;
+        return Ok(());
+    };
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("exec $EDITOR -")
+        .env("EDITOR", editor)
+        .stdin(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to open editor stdin"))?;
+    stdin.write_all(output.as_bytes())?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(format!("editor exited with {status}").into());
+    }
+
     Ok(())
 }
 
@@ -414,9 +620,72 @@ mod tests {
 
     #[test]
     fn parses_modes() {
-        assert!(matches!(parse_mode(&[]).unwrap(), Some(Mode::Defaults)));
+        assert_eq!(
+            parse_mode(&[]).unwrap(),
+            Some(Mode::Defaults(Options::default()))
+        );
         assert!(parse_mode(&["--help".to_string()]).unwrap().is_none());
         assert!(parse_mode(&["plist".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parses_output_options_and_aliases() {
+        assert_eq!(
+            parse_mode(&[
+                "--out=~/.defaults".to_string(),
+                "--edit".to_string(),
+                "--comment".to_string(),
+                "Trackpad".to_string()
+            ])
+            .unwrap(),
+            Some(Mode::Defaults(Options {
+                append: Some("~/.defaults".to_string()),
+                edit: Some(EditorChoice::Environment),
+                message: Some("Trackpad".to_string()),
+            }))
+        );
+
+        assert_eq!(
+            parse_mode(&[
+                "-a".to_string(),
+                "defaults.sh".to_string(),
+                "-mInitial setup".to_string()
+            ])
+            .unwrap(),
+            Some(Mode::Defaults(Options {
+                append: Some("defaults.sh".to_string()),
+                edit: None,
+                message: Some("Initial setup".to_string()),
+            }))
+        );
+
+        assert_eq!(
+            parse_mode(&["-e".to_string(), "vim".to_string()]).unwrap(),
+            Some(Mode::Defaults(Options {
+                append: None,
+                edit: Some(EditorChoice::Command("vim".to_string())),
+                message: None,
+            }))
+        );
+
+        assert_eq!(
+            parse_mode(&[
+                "--edit".to_string(),
+                "-a".to_string(),
+                "defaults.sh".to_string()
+            ])
+            .unwrap(),
+            Some(Mode::Defaults(Options {
+                append: Some("defaults.sh".to_string()),
+                edit: Some(EditorChoice::Environment),
+                message: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn renders_no_message_without_commands() {
+        assert_eq!(command_output(&[], Some("No diff")).unwrap(), "");
     }
 
     #[test]
