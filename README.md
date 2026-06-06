@@ -2,6 +2,18 @@
 
 Detect changes in macOS `defaults`
 
+## Help
+
+```text
+defaults-differ
+
+Usage
+  defaults-differ
+    [-a FILENAME | --append=FILENAME ]  Append defaults commands to a file
+    [-m MESSAGE  | --message=MESSAGE ]  Message as comment preceding commands
+    [-e [EDITOR] | --edit [EDITOR]   ]  Open $EDITOR or specified text editor
+```
+
 ## Usage
 
 Is there a macOS system setting that you'd like to be able to
