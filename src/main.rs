@@ -507,6 +507,7 @@ fn ignore_domain_specific_key(domain: &str, key: &str) -> bool {
         || (domain == "com.apple.DuetExpertCenter.AppPredictionExpert"
             && key.starts_with("ATXUpdatePredictionsLoggerCountsDictionary-"))
         || (domain == "com.apple.spaces" && key == "SpacesDisplayConfiguration")
+        || (domain == "com.apple.dataaccess.babysitter" && key == "RefreshingWaiters")
 }
 
 fn looks_like_timestamp_noise(key: &str, before: &str, after: &str) -> bool {
